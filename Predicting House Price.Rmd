@@ -1,0 +1,441 @@
+---
+title: "HousePrice"
+author: "Kun He"
+date: "17/9/2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The task of business analysts in house agencies is to estimate the value of a house. This is often based different features of a house including building years, how large is the house, which area is the house located, etc. A predictive model will be built based on the data downloaded online on 14/9/2017.
+
+## Data Details
+
+The data set contains 2410 properties in the city of Amsterdam. The dataset itself is not clean enough yet for an instant analysis. Missing variables are also possible for some features. A preliminary data cleaning and understanding is required. There are 11 columns for each property. 
+Adress: the address for the property
+Post: the post code of the property
+Price: the price of the property
+Date: the date when the property was shown on the website
+Construction year: the year when the property was built
+Living area: the area of the living area in the unit of m2
+Volume: the volume of the property in the unit of m3
+Facilities: the relevant facilities
+Energy: the energy label of the property 
+Parking: availability of parking 
+
+## Data Cleaning
+
+```{r echo = FALSE, results="hide", include=FALSE}
+
+rm(list = ls(all = TRUE)) # delete any "R" objects...to free up memory
+gc() # Check free space
+
+setwd("C:/Users/Administrator/Dropbox/Study/3 - Data Science/9 - Kaggle Competition/Quantilion/challenge/HousePrice")
+
+library(dplyr)
+library(ggplot2)
+library(mice)
+library(VIM)
+library(DMwR)
+library(psych)
+library(corrgram)
+library(car)
+library(mice)
+
+Sys.setlocale('LC_ALL','C')
+
+```
+
+The data is too messy at first glance, summary statistics cannot be done dirrectly. It is necessary to first clean the data then move to exploration.
+
+```{r warning=FALSE}
+data <- read.csv("house_price.csv")
+colnames(data)[1] <- "ID"
+colnames(data)[2] <- "address"
+colnames(data)[6] <- "constryr"
+
+head(data)
+
+# check numbers of rows and columns
+dim(data)
+
+# check names of data
+names(data)
+
+# check missing values
+aggr(data, prop=FALSE,numbers=TRUE)
+matrixplot(data)
+
+```
+
+First of all, remove the observations with either too many missing variables or missing prices.
+
+```{r warning=FALSE}
+
+# Remove observations with more than 50% missing columns
+data <- data[-manyNAs(data, 0.5), ]
+
+# Remove the rows with price as NA
+data <- data[!is.na(data$price),]
+
+# Remove the rows with "Price on request"
+data <- data[-grep("Price on request", data$price),]
+
+dim(data)
+
+```
+
+Since price is the dependent variables, recode it into numeric variables first. Two types of prices are involved: "v.o.n." and "k.k.". Introduce also a price type variable
+
+```{r warning=FALSE}
+
+data$price1 <- data$price
+data$price1 <- substr(data$price1,3,100)
+data$price1[grep(" v.o.n.", data$price1)] <- gsub('( v.o.n..*)', '', data$price1[grep(" v.o.n.", data$price1)])
+data$price1[grep(" k.k.", data$price1)] <- gsub('( k.k..*)', '', data$price1[grep(" k.k.", data$price1)])
+data$price1 <- gsub(',', '', data$price1)
+data$price1 <- as.integer(data$price1)
+
+# check still mising price
+table(is.na(data$price1))
+
+data$price_type <- ""
+data$price_type[grep(" v.o.n.", data$price)] <- "v.o.n."
+data$price_type[grep(" k.k.", data$price)] <- "k.k."
+
+table(data$price_type)
+
+# check still mising price_type
+table(is.na(data$price1))
+
+```
+
+Then clean the information of all the features for prediction.
+
+```{r warning=FALSE}
+
+# living area
+data$living_area_ori <- data$living_area
+data$living_area <- gsub(',', '', data$living_area)
+data$living_area <- as.integer(data$living_area)
+
+# check still mising living_area
+table(is.na(data$living_area))
+
+# volume
+data$volume_ori <- data$living_area
+data$volume <- gsub(',', '', data$volume)
+data$volume <- as.integer(data$volume)
+dim(data[!is.na(data$volume),])
+
+# check still mising volume
+table(is.na(data$volume))
+
+# number of rooms
+data$nr_rooms_ori <- data$nr_rooms
+data$nr_rooms <- gsub('( room.*)', '', data$nr_rooms)
+data$nr_rooms <- as.integer(data$nr_rooms)
+
+# check still mising nr_rooms
+table(is.na(data$nr_rooms))
+
+# number of bedrooms
+data$facilities_full <- paste(gsub('(.*\\()', '', data$nr_rooms_ori), data$facilities)
+data$nr_bedrooms <- data$facilities_full
+data$nr_bedrooms <- gsub('(bedroom.*)', '', data$nr_bedrooms)
+data$nr_bedrooms[-grep('(bedroom.*)', data$nr_bedrooms)] <- NA
+data$nr_bedrooms <- as.integer(data$nr_bedrooms)
+
+# check still mising bedrooms
+table(is.na(data$nr_rooms))
+
+# construction year
+
+data$constryr1 <- data$constryr
+data$constryr1 <- substr(data$constryr1, 1, 6)
+data$constryr1[grep("After",data$constryr)] <- substr(data$constryr[grep("After",data$constryr1)],7,12)
+data$constryr1[grep("Before",data$constryr)] <- substr(data$constryr[grep("Before",data$constryr1)],8,13)
+data$constryr1[grep("period",data$constryr)] <- substr(data$constryr[grep("period",data$constryr1)],8,19)
+data$constryr2 <- data$constryr1
+data$constryr1[grep("period",data$constryr)] <- NA
+data$constryr1 <- as.integer(data$constryr1)
+data$constryr1[grep("-",data$constryr2)] <- round((as.numeric(gsub('(.*-)', '', data$constryr2[grep("-",data$constryr2)])) + as.numeric(gsub('(-.*)', '', data$constryr2[grep("-",data$constryr2)]))) / 2 ,0)
+
+# check still mising construction year
+table(is.na(data$constryr1))
+
+# location
+data$PC4 <- substr(data$post,1,3)
+# considering too many levels, use only 3 digit of postcode
+data$PC4[data$PC4=="104"] <- "103"
+table(data$PC4)
+
+# check still mising location
+table(is.na(data$PC4))
+
+# energy label
+data$energy_label <- data$energy
+data$energy_label <- substr(data$energy,1,1)
+# if still missing then unknown
+data$energy_label[is.na(data$energy_label)] <- "Unknown"
+table(data$energy_label)
+
+# parking
+table(data$parking)
+table(is.na(data$parking))
+data$parking <- as.character(data$parking)
+# if still missing then Unknown
+data$parking[is.na(data$parking)] <- "Unknown"
+data$parking[data$parking=="Parking garage and"] <- "Unknown"
+table(data$parking)
+
+# date
+data$date <- as.character(data$date)
+data$daystillnow[data$date=="Today"] <- as.integer(Sys.Date()) - as.integer(as.Date("2017-09-14"))
+data$daystillnow[grep("weeks",data$date)] <- as.integer(substr(data$date[grep("weeks",data$date)],1,1))*7
+data$daystillnow[grep("months",data$date)] <- as.integer(substr(data$date[grep("months",data$date)],1,1))*30
+data$daystillnow[grep("September 7, 2017",data$date)] <- as.integer(Sys.Date()) - as.integer(as.Date("2017-09-07"))
+data$daystillnow[is.na(data$daystillnow) & !is.na(data$date)] <- as.integer(Sys.Date()) - as.integer(as.Date(data$date[is.na(data$daystillnow) & !is.na(data$date)], format="%d-%b-%y"))
+# if still missing then today
+data$daystillnow[is.na(data$daystillnow)] <- as.integer(Sys.Date()) - as.integer(as.Date("2017-09-14"))
+
+```
+
+## Exploration and feature energering
+
+It is always important to explore the relationship between features and dependent variable.
+
+```{r data}
+
+# names(data)
+# data_backup <- data
+# data <- data_backup
+data <- data[,c("price1","price_type","living_area","volume","nr_rooms","nr_bedrooms","energy_label","parking","constryr1","PC4","daystillnow")]
+# names(data)
+summary(data)
+str(data)
+
+# check the correlation between different variables
+corrgram(data, order=TRUE, lower.panel=panel.ellipse, upper.panel=panel.pts,
+         text.panel=panel.txt, diag.panel=panel.minmax)
+
+
+# check the distribution of price
+g <- ggplot(data, aes(x=price1))
+g <- g + geom_histogram()
+g 
+
+# check if price_type has someting to do with price, yes it does
+g <- ggplot(data[!is.na(data$living_area),], aes(x=price_type, y=price1))
+g <- g + geom_boxplot()
+g 
+
+# check the correlation between price and living_area
+g <- ggplot(data[!is.na(data$living_area),], aes(x=living_area, y=price1))
+g <- g + geom_point()
+g 
+
+# outliers can be spoted, remove and try again
+g <- ggplot(data[!is.na(data$living_area) & data$price1<5E6,], aes(x=living_area, y=price1))
+g <- g + geom_point()
+g 
+
+# it is better to remove price1 over 5E6, just a few observations
+table((data$price1>5E6))
+
+data <- data[data$price1<5E6,]
+
+# check the distribution of price again after removing outlier
+g <- ggplot(data, aes(x=price1))
+g <- g + geom_histogram()
+g 
+
+# check the correlation among price, living area and volume
+cor(data[,c("price1","living_area","volume")], use="complete.obs")
+# it appears that living_area is closer to price
+# can consider to create a new feature which represent height
+# also can use median height to recode living_area
+
+data4av <- data[!(is.na(data$volume)|is.na(data$living_area)),c("price1","volume","living_area")]
+data4av$height <- as.numeric(data4av$volume/data4av$living_area)
+median_height <- median(data4av$height)
+median_height
+
+data$living_area[is.na(data$living_area) & !is.na(data$volume)] <- data$volume[is.na(data$living_area) & !is.na(data$volume)] / median_height
+
+data$height[!is.na(data$living_area)] <- as.numeric(data$volume[!is.na(data$living_area)]/data$living_area[!is.na(data$living_area)])
+table(is.na(data$living_area))
+table(is.na(data$height))
+
+# remove volume
+data$volume <- NULL
+
+# check the relationship between price and energy label
+g <- ggplot(data[!is.na(data$energy_label), ], aes(x=energy_label, y=price1))
+g <- g + geom_boxplot()
+g 
+
+# check only price < 2E6, it is clearer that energy label has something to do with price
+g <- ggplot(data[!is.na(data$energy_label), ], aes(x=energy_label, y=price1))
+g <- g + geom_boxplot()
+g <- g + ylim(0, 2E6)
+g 
+
+# still a lot observations with price > 2E6, better to keep it
+table((data$price1>2E6))
+
+# check the relationship between price and PC4
+g <- ggplot(data[!is.na(data$PC4), ], aes(x=PC4, y=price1))
+g <- g + geom_boxplot()
+g <- g + ylim(0, 2E6)
+g 
+
+# check the correlation among price1, nr_rooms and nr_bedrooms
+cor(data[,c("price1","nr_rooms","nr_bedrooms")], use="complete.obs")
+# since nr_bedrooms has high correlation with nr_rooms, better to keep only nr_rooms
+# create another feature nr_other_rooms
+data$nr_other_rooms <- data$nr_rooms - data$nr_bedrooms
+cor(data[,c("price1","nr_rooms","nr_bedrooms","nr_other_rooms")], use="complete.obs")
+# the new feature has higher correlation with price, but lower with nr_rooms
+data$nr_bedrooms <- NULL
+
+# if built long ago, then it won't be very expensive
+g <- ggplot(data=data, aes(x=constryr1, y=price1))
+g <- g + geom_point()
+g 
+
+# energy label has strong relationship with construction year
+g <- ggplot(data=data, aes(x=energy_label, y=constryr1))
+g <- g + geom_boxplot()
+g 
+
+# use energy label to recode construction year 
+data$constryr3 <- !is.na(data$constryr1)
+table(data$constryr3, data$energy_label)
+
+data %>% filter(!is.na(constryr1)) %>%
+    group_by(energy_label) %>% summarise(builtyear=median(constryr1))
+
+data$constryr1[data$energy_label=="A" & is.na(data$constryr1)] <- 2005
+data$constryr1[data$energy_label=="B" & is.na(data$constryr1)] <- 1995
+data$constryr1[data$energy_label=="C" & is.na(data$constryr1)] <- 1986
+data$constryr1[data$energy_label=="D" & is.na(data$constryr1)] <- 1933
+data$constryr1[data$energy_label=="E" & is.na(data$constryr1)] <- 1963
+data$constryr1[data$energy_label=="F" & is.na(data$constryr1)] <- 1931
+data$constryr1[data$energy_label=="G" & is.na(data$constryr1)] <- 1918
+data$constryr1[data$energy_label=="Unknown" & is.na(data$constryr1)] <- 1928
+
+data$yeartodate <- year(Sys.Date()) - data$constryr1
+table(is.na(data$yeartodate))
+table(data$yeartodate)
+
+data$constryr3 <- NULL
+# some building will be built in the future
+
+# yeartodate is significantly correlated with price, keep it
+cor.test(data[,"price1"],data[,"yeartodate"])
+
+# daystillnow is significantly correlated with price, keep it
+cor.test(data[,"price1"],data[,"daystillnow"])
+
+names(data)
+dim(data)
+
+# check missing values
+apply(data, 2, function(x) sum(is.na(x)))
+
+data_clean <- data[-manyNAs(data), ]
+apply(data_clean, 2, function(x) sum(is.na(x)))
+
+table(data_clean$nr_other_rooms)
+table(is.na(data_clean$nr_other_rooms))
+
+data4ratio <- data[!(is.na(data_clean$nr_rooms)|is.na(data_clean$nr_other_rooms)),c("nr_rooms","nr_other_rooms")]
+median_ratio <- median(na.omit(data4ratio[,1] / data4ratio[,2]))
+median_ratio
+
+data_clean <- data_clean[!is.na(data_clean$nr_rooms),]
+data_clean$nr_other_rooms[is.na(data_clean$nr_other_rooms)] <- round(data_clean$nr_rooms[is.na(data_clean$nr_other_rooms)]/median_ratio,0)
+
+apply(data_clean, 2, function(x) sum(is.na(x)))
+dim(data_clean)
+str(data_clean)
+
+```
+
+## Model comparison
+
+Since quite some features seem to have linear relationship with independent variable, consider using linear regression, but also use decision tree as a validation.
+
+```{r data_clean}
+
+# prepare formula for model
+covnames <- names(select(data_clean, -c(price1)))
+form <- as.formula(paste("price1~", paste(covnames, collapse="+"), sep=""))
+form
+
+# linear regression first
+
+fit.lm <- lm(price1 ~ ., data_clean)
+summary(fit.lm)
+
+fit.lm2 <- lm(price1 ~ . - yeartodate, data_clean)
+summary(fit.lm2)
+
+anova(fit.lm,fit.lm2)
+
+# remove yeartodate, and the model will not be affected 
+
+vif(fit.lm2)
+
+# regression tree
+
+set.seed(123)
+library(rpart)
+fit.rt <- rpart(form, data_clean)
+fit.rt
+
+# random forest takes too much time to run
+# first compare linear regression and regression trees
+
+# compare models
+
+cv.rpart <- function(form,train,test,...){
+    m <- rpartXse(form,train, ...)
+    p <- predict(m,test)
+    mse <- mean((p-resp(form,test))^2)
+    c(nmse=mse/mean((mean(resp(form, train))-resp(form,test))^2))
+}
+
+cv.lm <- function(form,train,test,...){
+    m <- lm(form,train,...)
+    p <- predict(m,test)
+    p <- ifelse(p<0,0,p)
+    mse <- mean((p-resp(form,test))^2)
+    c(nmse=mse/mean((mean(resp(form,train))-resp(form,test))^2))
+}
+
+res <- experimentalComparison(
+    c(dataset(form, data_clean,'price1')),
+    c(variants('cv.lm'),
+      variants('cv.rpart',se=c(0,0.5,1))),
+    cvSettings(3,10,123))
+
+# compare the results
+summary(res)
+# linear regression is obviously better than regression trees
+plot(res)
+
+bestScores(res)
+
+```
+
+## Conclusion
+
+Linear regression is the best model for the task. 
